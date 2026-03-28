@@ -1,0 +1,5 @@
+python -m venv .venv
+source .venv/bin/activate
+pip install SpeechRecognition pyaudio requests ddgs beautifulsoup4 pyttsx3
+
+python3 base.py
