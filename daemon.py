@@ -44,6 +44,23 @@ if IS_TTS_OFFLINE:
 else:
     from gtts import gTTS
 
+# Pre-cache common TTS phrases at startup for instant playback
+_CACHE_DIR = os.path.join(tempfile.gettempdir(), "va_tts_cache")
+os.makedirs(_CACHE_DIR, exist_ok=True)
+
+def _get_cached_audio(text):
+    """Get or create a cached mp3 for a fixed phrase."""
+    safe_name = re.sub(r"[^a-z0-9]+", "_", text.lower().strip()).strip("_")
+    path = os.path.join(_CACHE_DIR, f"{safe_name}.mp3")
+    if not os.path.exists(path):
+        gTTS(text=text, lang="en").save(path)
+    return path
+
+if not IS_TTS_OFFLINE:
+    _READY_AUDIO = _get_cached_audio("Ready to listen.")
+else:
+    _READY_AUDIO = None
+
 
 def _clean_for_speech(text):
     """Clean text for TTS: remove markdown formatting and non-Latin characters."""
@@ -451,53 +468,61 @@ def main():
             t_wake_end = time.monotonic()
 
             print(f"Wake word detected!         [{t_wake_end - t_wake_start:.1f}s wake]")
-            speak("Ready to listen.", blocking=False)
+            if _READY_AUDIO:
+                subprocess.Popen(
+                    ["mpv", "--no-terminal", _READY_AUDIO],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
 
-            t_cmd_start = time.monotonic()
-            user_text = listen_for_command(recognizer, microphone)
-            t_cmd_end = time.monotonic()
-            if user_text is None:
-                continue
-            print(f"  [{t_cmd_end - t_cmd_start:.1f}s listen]", flush=True)
-
-            if IS_COMMAND_STAGED_BEFORE_EXECUTION:
-                result = confirm_input(user_text)
-
-                if result == "QUIT":
-                    print("Goodbye!")
-                    raise KeyboardInterrupt
-                if result == "REDO":
-                    continue
-
-                final_text = result
+                )
             else:
-                final_text = user_text
+                speak("Ready to listen.", blocking=False)
 
-            _cancel_event.clear()
-            stop_rec = sr.Recognizer()
-            stop_mic = sr.Microphone()
-            stop_thread = threading.Thread(
-                target=_stop_listener, args=(stop_rec, stop_mic), daemon=True,
-            )
-            stop_thread.start()
+            while True:
+                t_cmd_start = time.monotonic()
+                user_text = listen_for_command(recognizer, microphone)
+                t_cmd_end = time.monotonic()
+                if user_text is None:
+                    break
+                print(f"  [{t_cmd_end - t_cmd_start:.1f}s listen]", flush=True)
 
-            try:
-                t_ollama_start = time.monotonic()
-                ask_ollama(final_text, conversation_history)
-                t_ollama_end = time.monotonic()
-                if _cancel_event.is_set():
-                    print(f"  [response cancelled after {t_ollama_end - t_ollama_start:.1f}s]", flush=True)
+                if IS_COMMAND_STAGED_BEFORE_EXECUTION:
+                    result = confirm_input(user_text)
+
+                    if result == "QUIT":
+                        print("Goodbye!")
+                        raise KeyboardInterrupt
+                    if result == "REDO":
+                        continue
+
+                    final_text = result
                 else:
-                    print(f"  [{t_ollama_end - t_ollama_start:.1f}s total response]", flush=True)
-            except requests.ConnectionError:
-                print("Could not connect to Ollama. Is it running? (ollama serve)")
-            except requests.HTTPError as e:
-                print(f"Ollama error: {e}")
-            finally:
-                _cancel_event.set()
-                stop_thread.join(timeout=5)
+                    final_text = user_text
 
-            print()  # blank line before next wake word
+                _cancel_event.clear()
+                stop_rec = sr.Recognizer()
+                stop_mic = sr.Microphone()
+                stop_thread = threading.Thread(
+                    target=_stop_listener, args=(stop_rec, stop_mic), daemon=True,
+                )
+                stop_thread.start()
+
+                try:
+                    t_ollama_start = time.monotonic()
+                    ask_ollama(final_text, conversation_history)
+                    t_ollama_end = time.monotonic()
+                    if _cancel_event.is_set():
+                        print(f"  [response cancelled after {t_ollama_end - t_ollama_start:.1f}s]", flush=True)
+                    else:
+                        print(f"  [{t_ollama_end - t_ollama_start:.1f}s total response]", flush=True)
+                except requests.ConnectionError:
+                    print("Could not connect to Ollama. Is it running? (ollama serve)")
+                except requests.HTTPError as e:
+                    print(f"Ollama error: {e}")
+                finally:
+                    _cancel_event.set()
+                    stop_thread.join(timeout=5)
+
+                print()  # blank line before next listen
     except KeyboardInterrupt:
         print("\nGoodbye!")
 
