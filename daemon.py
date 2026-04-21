@@ -521,8 +521,10 @@ def main():
                 finally:
                     _cancel_event.set()
                     stop_thread.join(timeout=5)
+                    _cancel_event.clear()
 
-                print()  # blank line before next listen
+                time.sleep(0.5)  # let audio settle before reopening mic
+                print("\nListening for follow-up... (say wake word to start fresh)", flush=True)
     except KeyboardInterrupt:
         print("\nGoodbye!")
 
