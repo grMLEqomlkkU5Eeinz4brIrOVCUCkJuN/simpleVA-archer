@@ -15,6 +15,7 @@ import requests
 IS_TTS_OFFLINE = False
 WAKE_PHRASE = "harold"
 STOP_WORDS = {"stop", "cancel", "shut up", "be quiet", "enough", "terminate"}
+END_PHRASE = "over"
 
 # Suppress ALSA warnings/errors from C library
 _ERROR_HANDLER = ctypes.CFUNCTYPE(
@@ -52,12 +53,12 @@ def listener_process(listener_q, active_flag):
 			else:
 				with microphone as source:
 					recognizer.adjust_for_ambient_noise(source, duration=0.3)
-					audio = recognizer.listen(source, timeout=None, phrase_time_limit=30)
+					audio = recognizer.listen(source, timeout=None, phrase_time_limit=10)
 				try:
 					text = recognizer.recognize_google(audio)
 					listener_q.put(("speech", text))
 				except sr.UnknownValueError:
-					pass
+					listener_q.put(("speech", ""))
 				except sr.RequestError as e:
 					listener_q.put(("error", str(e)))
 		except Exception as e:
@@ -447,6 +448,7 @@ def main():
 	tts_mode = "offline (pyttsx3)" if IS_TTS_OFFLINE else "online (gTTS)"
 	print('Voice Assistant ready. Say "gio" to activate.')
 	print(f"Tools: web_search, fetch_page, get_datetime | TTS: {tts_mode}")
+	print('Say "over" to end your input and send to assistant.')
 	print('Say "stop" or "cancel" to interrupt a response.')
 	print("Press Ctrl+C to quit.\n")
 
@@ -454,6 +456,7 @@ def main():
 	conversation_history = []
 	last_speech_time = 0
 	LISTEN_TIMEOUT = 15
+	accumulated_input = []
 
 	try:
 		while True:
@@ -467,6 +470,7 @@ def main():
 				if state == LISTENING and (time.monotonic() - last_speech_time) > LISTEN_TIMEOUT:
 					print("  [no speech — returning to idle]", flush=True)
 					state = IDLE
+					accumulated_input = []
 				continue
 
 			if event_type == "error":
@@ -480,6 +484,7 @@ def main():
 				speaker_q.put(("ready", None))
 				state = LISTENING
 				last_speech_time = time.monotonic()
+				accumulated_input = []
 				continue
 
 			if event_type != "speech" or not text:
@@ -494,17 +499,23 @@ def main():
 
 				print(f"You said: {text}")
 
-				try:
-					ask_ollama(text, conversation_history, listener_q, speaker_q, speaking_flag)
-				except requests.ConnectionError:
-					print("Could not connect to Ollama. Is it running? (ollama serve)")
-				except requests.HTTPError as e:
-					print(f"Ollama error: {e}")
-				except Exception as e:
-					print(f"Error: {e}")
+				if text.lower().strip() == END_PHRASE:
+					full_input = " ".join(accumulated_input).strip()
+					accumulated_input = []
+					if full_input:
+						try:
+							ask_ollama(full_input, conversation_history, listener_q, speaker_q, speaking_flag)
+						except requests.ConnectionError:
+							print("Could not connect to Ollama. Is it running? (ollama serve)")
+						except requests.HTTPError as e:
+							print(f"Ollama error: {e}")
+						except Exception as e:
+							print(f"Error: {e}")
 
-				last_speech_time = time.monotonic()
-				print("\nListening for follow-up...", flush=True)
+						last_speech_time = time.monotonic()
+						print("\nListening for follow-up...", flush=True)
+				else:
+					accumulated_input.append(text)
 
 	except KeyboardInterrupt:
 		print("\nGoodbye!")
